@@ -10,9 +10,7 @@
 //! - Sender can cancel and reclaim unstreamed tokens
 //! - Multiple streams can run in parallel (keyed by stream_id)
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, Symbol,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Symbol};
 
 #[contracttype]
 pub enum DataKey {
@@ -128,7 +126,12 @@ impl ForgeStream {
 
         env.events().publish(
             (Symbol::new(&env, "stream_created"),),
-            (stream_id, &stream.recipient, rate_per_second, duration_seconds),
+            (
+                stream_id,
+                &stream.recipient,
+                rate_per_second,
+                duration_seconds,
+            ),
         );
 
         Ok(stream_id)
@@ -216,11 +219,7 @@ impl ForgeStream {
 
         // Return unstreamed amount to sender
         if returnable > 0 {
-            token_client.transfer(
-                &env.current_contract_address(),
-                &stream.sender,
-                &returnable,
-            );
+            token_client.transfer(&env.current_contract_address(), &stream.sender, &returnable);
         }
 
         env.events().publish(
@@ -282,7 +281,10 @@ impl ForgeStream {
 mod tests {
     extern crate std;
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Ledger}, Env};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger},
+        Env,
+    };
 
     #[test]
     fn test_create_stream_success() {

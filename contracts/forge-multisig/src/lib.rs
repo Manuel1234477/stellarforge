@@ -10,9 +10,7 @@
 //! - Owners can propose, approve, reject, and execute transactions
 //! - Native token support via Stellar token interface
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Vec};
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -99,8 +97,12 @@ impl MultisigContract {
             return Err(MultisigError::InvalidThreshold);
         }
         env.storage().instance().set(&DataKey::Owners, &owners);
-        env.storage().instance().set(&DataKey::Threshold, &threshold);
-        env.storage().instance().set(&DataKey::TimelockDelay, &timelock_delay);
+        env.storage()
+            .instance()
+            .set(&DataKey::Threshold, &threshold);
+        env.storage()
+            .instance()
+            .set(&DataKey::TimelockDelay, &timelock_delay);
         Ok(())
     }
 
@@ -163,11 +165,7 @@ impl MultisigContract {
     /// - `MultisigError::Unauthorized` if caller is not an owner.
     /// - `MultisigError::AlreadyVoted` if caller already voted.
     /// - `MultisigError::AlreadyExecuted` if already executed.
-    pub fn approve(
-        env: Env,
-        owner: Address,
-        proposal_id: u64,
-    ) -> Result<(), MultisigError> {
+    pub fn approve(env: Env, owner: Address, proposal_id: u64) -> Result<(), MultisigError> {
         owner.require_auth();
         Self::require_owner(&env, &owner)?;
 
@@ -206,11 +204,7 @@ impl MultisigContract {
     /// # Errors
     /// - `MultisigError::Unauthorized` if caller is not an owner.
     /// - `MultisigError::AlreadyVoted` if caller already voted.
-    pub fn reject(
-        env: Env,
-        owner: Address,
-        proposal_id: u64,
-    ) -> Result<(), MultisigError> {
+    pub fn reject(env: Env, owner: Address, proposal_id: u64) -> Result<(), MultisigError> {
         owner.require_auth();
         Self::require_owner(&env, &owner)?;
 
@@ -241,11 +235,7 @@ impl MultisigContract {
     /// - `MultisigError::InsufficientApprovals` if threshold not reached.
     /// - `MultisigError::TimelockNotElapsed` if timelock is still active.
     /// - `MultisigError::AlreadyExecuted` if already executed.
-    pub fn execute(
-        env: Env,
-        executor: Address,
-        proposal_id: u64,
-    ) -> Result<(), MultisigError> {
+    pub fn execute(env: Env, executor: Address, proposal_id: u64) -> Result<(), MultisigError> {
         executor.require_auth();
         Self::require_owner(&env, &executor)?;
 
@@ -262,8 +252,14 @@ impl MultisigContract {
             return Err(MultisigError::AlreadyCancelled);
         }
 
-        let approved_at = proposal.approved_at.ok_or(MultisigError::InsufficientApprovals)?;
-        let delay: u64 = env.storage().instance().get(&DataKey::TimelockDelay).unwrap_or(0);
+        let approved_at = proposal
+            .approved_at
+            .ok_or(MultisigError::InsufficientApprovals)?;
+        let delay: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TimelockDelay)
+            .unwrap_or(0);
 
         if env.ledger().timestamp() < approved_at + delay {
             return Err(MultisigError::TimelockNotElapsed);
@@ -286,17 +282,25 @@ impl MultisigContract {
 
     /// Get a proposal by ID.
     pub fn get_proposal(env: Env, proposal_id: u64) -> Option<Proposal> {
-        env.storage().persistent().get(&DataKey::Proposal(proposal_id))
+        env.storage()
+            .persistent()
+            .get(&DataKey::Proposal(proposal_id))
     }
 
     /// Get list of owners.
     pub fn get_owners(env: Env) -> Vec<Address> {
-        env.storage().instance().get(&DataKey::Owners).unwrap_or(Vec::new(&env))
+        env.storage()
+            .instance()
+            .get(&DataKey::Owners)
+            .unwrap_or(Vec::new(&env))
     }
 
     /// Get the approval threshold.
     pub fn get_threshold(env: Env) -> u32 {
-        env.storage().instance().get(&DataKey::Threshold).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::Threshold)
+            .unwrap_or(0)
     }
 
     // ── Private ───────────────────────────────────────────────────────────────
@@ -321,7 +325,10 @@ impl MultisigContract {
 mod tests {
     extern crate std;
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Ledger}, vec, Env};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger},
+        vec, Env,
+    };
 
     fn setup_2of3(env: &Env) -> (Address, Address, Address) {
         let o1 = Address::generate(env);

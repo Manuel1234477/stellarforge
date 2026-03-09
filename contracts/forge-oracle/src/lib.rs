@@ -142,10 +142,7 @@ impl ForgeOracle {
     /// - `OracleError::PriceNotFound` if no price has been submitted.
     /// - `OracleError::PriceStale` if the price is older than the threshold.
     pub fn get_price(env: Env, base: Symbol, quote: Symbol) -> Result<PriceData, OracleError> {
-        let pair = PricePair {
-            base,
-            quote,
-        };
+        let pair = PricePair { base, quote };
 
         let price: i128 = env
             .storage()
@@ -202,10 +199,7 @@ impl ForgeOracle {
 
     /// Update the staleness threshold.
     /// Only callable by admin.
-    pub fn set_staleness_threshold(
-        env: Env,
-        new_threshold: u64,
-    ) -> Result<(), OracleError> {
+    pub fn set_staleness_threshold(env: Env, new_threshold: u64) -> Result<(), OracleError> {
         let admin: Address = env
             .storage()
             .instance()

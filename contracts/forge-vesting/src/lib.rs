@@ -10,9 +10,7 @@
 //! - Beneficiary can call `claim()` at any time to withdraw unlocked tokens
 //! - Admin can cancel vesting and reclaim unvested tokens
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, Symbol,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Symbol};
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
@@ -120,7 +118,11 @@ impl ForgeVesting {
 
         env.events().publish(
             (Symbol::new(&env, "vesting_initialized"),),
-            (config.total_amount, config.cliff_seconds, config.duration_seconds),
+            (
+                config.total_amount,
+                config.cliff_seconds,
+                config.duration_seconds,
+            ),
         );
 
         Ok(())
@@ -199,11 +201,7 @@ impl ForgeVesting {
 
         if returnable > 0 {
             let token_client = token::Client::new(&env, &config.token);
-            token_client.transfer(
-                &env.current_contract_address(),
-                &config.admin,
-                &returnable,
-            );
+            token_client.transfer(&env.current_contract_address(), &config.admin, &returnable);
         }
 
         env.events().publish(
@@ -290,10 +288,7 @@ mod tests {
     fn test_initialize_success() {
         let (env, contract_id, token, beneficiary, admin) = setup();
         let client = ForgeVestingClient::new(&env, &contract_id);
-        let result = client.try_initialize(
-            &token, &beneficiary, &admin,
-            &1_000_000, &100, &1000,
-        );
+        let result = client.try_initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
         assert!(result.is_ok());
     }
 
@@ -302,10 +297,7 @@ mod tests {
         let (env, contract_id, token, beneficiary, admin) = setup();
         let client = ForgeVestingClient::new(&env, &contract_id);
         client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
-        let result = client.try_initialize(
-            &token, &beneficiary, &admin,
-            &1_000_000, &100, &1000,
-        );
+        let result = client.try_initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
         assert_eq!(result, Err(Ok(VestingError::AlreadyInitialized)));
     }
 
@@ -336,10 +328,7 @@ mod tests {
         let (env, contract_id, token, beneficiary, admin) = setup();
         let client = ForgeVestingClient::new(&env, &contract_id);
         // cliff > duration is invalid
-        let result = client.try_initialize(
-            &token, &beneficiary, &admin,
-            &1_000_000, &2000, &1000,
-        );
+        let result = client.try_initialize(&token, &beneficiary, &admin, &1_000_000, &2000, &1000);
         assert_eq!(result, Err(Ok(VestingError::InvalidConfig)));
     }
 

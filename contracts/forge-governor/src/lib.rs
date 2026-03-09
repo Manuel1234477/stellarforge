@@ -10,9 +10,7 @@
 //! - Timelock between approval and execution
 //! - Anyone can propose; execution is permissionless once passed
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Env, String, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -298,7 +296,9 @@ impl GovernorContract {
 
     /// Get a proposal by ID.
     pub fn get_proposal(env: Env, proposal_id: u64) -> Option<Proposal> {
-        env.storage().persistent().get(&DataKey::Proposal(proposal_id))
+        env.storage()
+            .persistent()
+            .get(&DataKey::Proposal(proposal_id))
     }
 
     /// Get the governor configuration.
@@ -320,7 +320,10 @@ impl GovernorContract {
 mod tests {
     extern crate std;
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Ledger}, Env, String};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger},
+        Env, String,
+    };
 
     fn setup(env: &Env) -> GovernorConfig {
         let token = Address::generate(env);
@@ -350,7 +353,8 @@ mod tests {
             proposer,
             String::from_str(&env, "Test Proposal"),
             String::from_str(&env, "A test"),
-        ).unwrap();
+        )
+        .unwrap();
 
         GovernorContract::vote(env.clone(), voter, pid, true, 200).unwrap();
 
@@ -374,7 +378,8 @@ mod tests {
             proposer,
             String::from_str(&env, "Low vote"),
             String::from_str(&env, "desc"),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Vote with less than quorum (100)
         let voter = Address::generate(&env);
@@ -396,10 +401,12 @@ mod tests {
         let proposer = Address::generate(&env);
         let voter = Address::generate(&env);
         let pid = GovernorContract::propose(
-            env.clone(), proposer,
+            env.clone(),
+            proposer,
             String::from_str(&env, "P"),
             String::from_str(&env, "D"),
-        ).unwrap();
+        )
+        .unwrap();
 
         GovernorContract::vote(env.clone(), voter.clone(), pid, true, 100).unwrap();
         let result = GovernorContract::vote(env, voter, pid, true, 100);
@@ -419,10 +426,12 @@ mod tests {
         let executor = Address::generate(&env);
 
         let pid = GovernorContract::propose(
-            env.clone(), proposer,
+            env.clone(),
+            proposer,
             String::from_str(&env, "P"),
             String::from_str(&env, "D"),
-        ).unwrap();
+        )
+        .unwrap();
 
         GovernorContract::vote(env.clone(), voter, pid, true, 200).unwrap();
         env.ledger().with_mut(|l| l.timestamp = 5000);
