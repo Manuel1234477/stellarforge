@@ -10,7 +10,7 @@
 //! - Sender can cancel and reclaim unstreamed tokens
 //! - Multiple streams can run in parallel (keyed by stream_id)
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, token, Address, Env, Symbol};
 
 #[contracttype]
 pub enum DataKey {
@@ -53,7 +53,7 @@ pub struct StreamStatus {
     pub is_finished: bool,
 }
 
-#[contracttype]
+#[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum StreamError {
     StreamNotFound = 1,

@@ -10,7 +10,7 @@
 //! - Beneficiary can call `claim()` at any time to withdraw unlocked tokens
 //! - Admin can cancel vesting and reclaim unvested tokens
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, token, Address, Env, Symbol};
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
@@ -56,7 +56,7 @@ pub struct VestingStatus {
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
-#[contracttype]
+#[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum VestingError {
     AlreadyInitialized = 1,

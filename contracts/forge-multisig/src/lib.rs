@@ -10,7 +10,7 @@
 //! - Owners can propose, approve, reject, and execute transactions
 //! - Native token support via Stellar token interface
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, token, Address, Env, Vec};
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -51,7 +51,7 @@ pub struct Proposal {
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
-#[contracttype]
+#[contracterror]
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum MultisigError {
     AlreadyInitialized = 1,

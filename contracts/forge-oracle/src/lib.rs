@@ -10,7 +10,7 @@
 //! - Configurable staleness threshold — reads revert if price is too old
 //! - Event emission on every price update
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Env, Symbol};
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
@@ -43,7 +43,7 @@ pub struct PriceData {
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
-#[contracttype]
+#[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum OracleError {
     AlreadyInitialized = 1,
