@@ -10,7 +10,7 @@
 //! - Owners can propose, approve, reject, and execute transactions
 //! - Native token support via Stellar token interface
 
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, token, Address, Env, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, Vec};
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -123,7 +123,9 @@ impl MultisigContract {
         if threshold == 0 || threshold > unique_owners.len() {
             return Err(MultisigError::InvalidThreshold);
         }
-        env.storage().instance().set(&DataKey::Owners, &unique_owners);
+        env.storage()
+            .instance()
+            .set(&DataKey::Owners, &unique_owners);
         env.storage()
             .instance()
             .set(&DataKey::Threshold, &threshold);
@@ -423,6 +425,14 @@ impl MultisigContract {
             .unwrap_or(Vec::new(&env))
     }
 
+    /// Return the list of authorized owner addresses. Alias for [`get_owners`](Self::get_owners).
+    ///
+    /// # Returns
+    /// A [`Vec<Address>`] of all current owners.
+    pub fn get_owner_list(env: Env) -> Vec<Address> {
+        Self::get_owners(env)
+    }
+
     /// Return the current approval threshold (N in N-of-M).
     ///
     /// Read-only; returns `0` if the contract has not been initialized.
@@ -438,6 +448,24 @@ impl MultisigContract {
         env.storage()
             .instance()
             .get(&DataKey::Threshold)
+            .unwrap_or(0)
+    }
+
+    /// Return the number of owner approvals for a proposal.
+    ///
+    /// Lightweight read-only view intended for UIs that only need approval count.
+    /// Returns `0` if the proposal does not exist.
+    ///
+    /// # Parameters
+    /// - `proposal_id` — The target proposal ID.
+    ///
+    /// # Returns
+    /// Number of approvals currently recorded for the proposal.
+    pub fn get_approval_count(env: Env, proposal_id: u64) -> u32 {
+        env.storage()
+            .persistent()
+            .get::<DataKey, Proposal>(&DataKey::Proposal(proposal_id))
+            .map(|proposal| proposal.approvals.len())
             .unwrap_or(0)
     }
 
@@ -468,35 +496,39 @@ mod tests {
         vec, Env,
     };
 
-    fn setup_2of3(env: &Env) -> (Address, Address, Address) {
+    fn setup_2of3<'a>(env: &'a Env) -> (MultisigContractClient<'a>, Address, Address, Address) {
+        let contract_id = env.register_contract(None, MultisigContract);
+        let client = MultisigContractClient::new(env, &contract_id);
         let o1 = Address::generate(env);
         let o2 = Address::generate(env);
         let o3 = Address::generate(env);
-        let owners = vec![env, o1.clone(), o2.clone(), o3.clone()];
-        MultisigContract::initialize(env.clone(), owners, 2, 3600).unwrap();
-        (o1, o2, o3)
+        client.initialize(&vec![env, o1.clone(), o2.clone(), o3.clone()], &2, &3600);
+        (client, o1, o2, o3)
     }
 
     #[test]
     fn test_invalid_threshold() {
         let env = Env::default();
         env.mock_all_auths();
-        env.register(MultisigContract, ());
+        let contract_id = env.register_contract(None, MultisigContract);
+        let client = MultisigContractClient::new(&env, &contract_id);
         let o1 = Address::generate(&env);
-        let owners = vec![&env, o1.clone()];
-        let result = MultisigContract::initialize(env, owners, 5, 0);
-        assert_eq!(result, Err(MultisigError::InvalidThreshold));
+        let result = client.try_initialize(&vec![&env, o1], &5, &0);
+        assert_eq!(result, Err(Ok(MultisigError::InvalidThreshold)));
     }
 
     #[test]
     fn test_initialize_with_duplicate_owners() {
         let env = Env::default();
         env.mock_all_auths();
-        env.register(MultisigContract, ());
+        let contract_id = env.register_contract(None, MultisigContract);
+        let client = MultisigContractClient::new(&env, &contract_id);
+        let mid = env.register_contract(None, MultisigContract);
+        let client = MultisigContractClient::new(&env, &mid);
         let o1 = Address::generate(&env);
         let owners = vec![&env, o1.clone(), o1.clone(), o1.clone()]; // 3 duplicates
-        MultisigContract::initialize(env.clone(), owners, 1, 0).unwrap();
-        let stored_owners = MultisigContract::get_owners(env);
+        client.initialize(&owners, &1, &0);
+        let stored_owners = client.get_owners();
         assert_eq!(stored_owners.len(), 1);
         assert!(stored_owners.contains(&o1));
     }
@@ -505,15 +537,14 @@ mod tests {
     fn test_propose_and_approve_reaches_threshold() {
         let env = Env::default();
         env.mock_all_auths();
-        env.register(MultisigContract, ());
-        let (o1, o2, _) = setup_2of3(&env);
+        let (client, o1, o2, _) = setup_2of3(&env);
         let token = Address::generate(&env);
         let to = Address::generate(&env);
 
-        let pid = MultisigContract::propose(env.clone(), o1, to, token, 500).unwrap();
-        MultisigContract::approve(env.clone(), o2, pid).unwrap();
+        let pid = client.propose(&o1, &to, &token, &500);
+        client.approve(&o2, &pid);
 
-        let proposal = MultisigContract::get_proposal(env, pid).unwrap();
+        let proposal = client.get_proposal(&pid).unwrap();
         assert!(proposal.approved_at.is_some());
     }
 
@@ -521,14 +552,13 @@ mod tests {
     fn test_double_vote_fails() {
         let env = Env::default();
         env.mock_all_auths();
-        env.register(MultisigContract, ());
-        let (o1, o2, _) = setup_2of3(&env);
+        let (client, o1, _, _) = setup_2of3(&env);
         let token = Address::generate(&env);
         let to = Address::generate(&env);
 
-        let pid = MultisigContract::propose(env.clone(), o1.clone(), to, token, 500).unwrap();
-        let result = MultisigContract::approve(env, o1, pid);
-        assert_eq!(result, Err(MultisigError::AlreadyVoted));
+        let pid = client.propose(&o1, &to, &token, &500);
+        let result = client.try_approve(&o1, &pid);
+        assert_eq!(result, Err(Ok(MultisigError::AlreadyVoted)));
     }
 
     #[test]
@@ -536,16 +566,15 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.ledger().with_mut(|l| l.timestamp = 0);
-        env.register(MultisigContract, ());
-        let (o1, o2, o3) = setup_2of3(&env);
+        let (client, o1, o2, o3) = setup_2of3(&env);
         let token = Address::generate(&env);
         let to = Address::generate(&env);
 
-        let pid = MultisigContract::propose(env.clone(), o1, to, token, 500).unwrap();
-        MultisigContract::approve(env.clone(), o2, pid).unwrap();
+        let pid = client.propose(&o1, &to, &token, &500);
+        client.approve(&o2, &pid);
 
-        let result = MultisigContract::execute(env, o3, pid);
-        assert_eq!(result, Err(MultisigError::TimelockNotElapsed));
+        let result = client.try_execute(&o3, &pid);
+        assert_eq!(result, Err(Ok(MultisigError::TimelockNotElapsed)));
     }
 
     #[test]
@@ -553,18 +582,139 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.ledger().with_mut(|l| l.timestamp = 0);
+
+        let contract_id = env.register_contract(None, MultisigContract);
+        let client = MultisigContractClient::new(&env, &contract_id);
+        let o1 = Address::generate(&env);
+        let o2 = Address::generate(&env);
+        let o3 = Address::generate(&env);
+        client.initialize(&vec![&env, o1.clone(), o2.clone(), o3.clone()], &2, &3600);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let to = Address::generate(&env);
+        soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&contract_id, &500);
+
+        let pid = client.propose(&o1, &to, &token_id, &500);
+        client.approve(&o2, &pid);
+
+        env.ledger().with_mut(|l| l.timestamp = 7200);
+        client.execute(&o3, &pid);
+
+        let proposal = client.get_proposal(&pid).unwrap();
+        assert!(proposal.executed);
+    }
+
+    #[test]
+    fn test_execute_reverts_below_threshold() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 0);
+        let (client, o1, _, o3) = setup_2of3(&env);
+        let token = Address::generate(&env);
+        let to = Address::generate(&env);
+
+        // Only proposer's auto-approval — 1 of 2 required
+        let pid = client.propose(&o1, &to, &token, &500);
+        env.ledger().with_mut(|l| l.timestamp = 7200);
+        let result = client.try_execute(&o3, &pid);
+        assert_eq!(result, Err(Ok(MultisigError::InsufficientApprovals)));
+    }
+
+    #[test]
+    fn test_execute_succeeds_at_exact_threshold() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 0);
+
+        let contract_id = env.register_contract(None, MultisigContract);
+        let client = MultisigContractClient::new(&env, &contract_id);
+        let o1 = Address::generate(&env);
+        let o2 = Address::generate(&env);
+        let o3 = Address::generate(&env);
+        client.initialize(&vec![&env, o1.clone(), o2.clone(), o3.clone()], &2, &3600);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let to = Address::generate(&env);
+        soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&contract_id, &500);
+
+        let pid = client.propose(&o1, &to, &token_id, &500);
+        // Second approval hits threshold exactly (2-of-3)
+        client.approve(&o2, &pid);
+
+        env.ledger().with_mut(|l| l.timestamp = 7200);
+        client.execute(&o3, &pid);
+
+        let proposal = client.get_proposal(&pid).unwrap();
+        assert!(proposal.executed);
+    }
+
+    #[test]
+    fn test_get_approval_count_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
         env.register(MultisigContract, ());
-        let (o1, o2, o3) = setup_2of3(&env);
+
+        assert_eq!(MultisigContract::get_approval_count(env, 999), 0);
+    }
+
+    #[test]
+    fn test_get_approval_count_partial() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.register(MultisigContract, ());
+        let (o1, _, _) = setup_2of3(&env);
+        let token = Address::generate(&env);
+        let to = Address::generate(&env);
+
+        let pid = MultisigContract::propose(env.clone(), o1, to, token, 500).unwrap();
+
+        assert_eq!(MultisigContract::get_approval_count(env, pid), 1);
+    }
+
+    #[test]
+    fn test_get_approval_count_full() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.register(MultisigContract, ());
+        let (o1, o2, _) = setup_2of3(&env);
         let token = Address::generate(&env);
         let to = Address::generate(&env);
 
         let pid = MultisigContract::propose(env.clone(), o1, to, token, 500).unwrap();
         MultisigContract::approve(env.clone(), o2, pid).unwrap();
 
-        env.ledger().with_mut(|l| l.timestamp = 7200);
-        MultisigContract::execute(env.clone(), o3, pid).unwrap_or(());
+        assert_eq!(MultisigContract::get_approval_count(env, pid), 2);
+    fn test_rejected_proposal_cannot_execute() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 0);
+        let (client, o1, o2, o3) = setup_2of3(&env);
+        let token = Address::generate(&env);
+        let to = Address::generate(&env);
 
-        let proposal = MultisigContract::get_proposal(env, pid).unwrap();
-        assert!(proposal.executed);
+        let pid = client.propose(&o1, &to, &token, &500);
+        client.reject(&o2, &pid);
+        client.reject(&o3, &pid);
+
+        env.ledger().with_mut(|l| l.timestamp = 7200);
+        let result = client.try_execute(&o3, &pid);
+        assert_eq!(result, Err(Ok(MultisigError::InsufficientApprovals)));
+    }
+
+    #[test]
+    fn test_get_owners_list() {
+        let env = Env::default();
+        let (client, o1, o2, o3) = setup_2of3(&env);
+        let owners = client.get_owner_list();
+        assert_eq!(owners.len(), 3);
+        assert!(owners.contains(&o1));
+        assert!(owners.contains(&o2));
+        assert!(owners.contains(&o3));
     }
 }
