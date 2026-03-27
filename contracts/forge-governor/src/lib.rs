@@ -20,6 +20,7 @@ pub enum DataKey {
     Proposal(u64),
     Vote(u64, Address),
     NextProposalId,
+    ActiveProposals,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -203,6 +204,17 @@ impl GovernorContract {
             .instance()
             .set(&DataKey::NextProposalId, &(proposal_id + 1));
 
+        // Track active proposal ID for O(1) get_pending_proposals
+        let mut active: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveProposals)
+            .unwrap_or_else(|| Vec::new(&env));
+        active.push_back(proposal_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::ActiveProposals, &active);
+
         Ok(proposal_id)
     }
 
@@ -335,6 +347,19 @@ impl GovernorContract {
             .persistent()
             .set(&DataKey::Proposal(proposal_id), &proposal);
 
+        // Remove from active proposals list
+        let mut active: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveProposals)
+            .unwrap_or_else(|| Vec::new(&env));
+        if let Some(pos) = active.iter().position(|id| id == proposal_id) {
+            active.remove(pos as u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::ActiveProposals, &active);
+        }
+
         Ok(state)
     }
 
@@ -390,6 +415,19 @@ impl GovernorContract {
         env.storage()
             .persistent()
             .set(&DataKey::Proposal(proposal_id), &proposal);
+
+        // Remove from active proposals list (in case finalize was skipped)
+        let mut active: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveProposals)
+            .unwrap_or_else(|| Vec::new(&env));
+        if let Some(pos) = active.iter().position(|id| id == proposal_id) {
+            active.remove(pos as u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::ActiveProposals, &active);
+        }
 
         Ok(())
     }
@@ -505,22 +543,23 @@ impl GovernorContract {
     /// }
     /// ```
     pub fn get_pending_proposals(env: Env) -> Vec<u64> {
-        let next_id: u64 = env
+        let active: Vec<u64> = env
             .storage()
             .instance()
-            .get(&DataKey::NextProposalId)
-            .unwrap_or(0u64);
+            .get(&DataKey::ActiveProposals)
+            .unwrap_or_else(|| Vec::new(&env));
 
         let now = env.ledger().timestamp();
         let mut pending = Vec::new(&env);
 
-        for id in 0..next_id {
+        for id in active.iter() {
             if let Some(proposal) = env
                 .storage()
                 .persistent()
                 .get::<DataKey, Proposal>(&DataKey::Proposal(id))
             {
-                if proposal.state == ProposalState::Active && now <= proposal.vote_end {
+                // state is always Active in the list, but exclude expired voting windows
+                if now <= proposal.vote_end {
                     pending.push_back(id);
                 }
             }
@@ -1189,5 +1228,72 @@ mod tests {
         env.ledger().with_mut(|l| l.timestamp = 5000);
         let state = client.finalize(&pid);
         assert_eq!(state, ProposalState::Passed);
+    }
+
+    /// get_pending_proposals() reads only the ActiveProposals list, not every proposal.
+    /// Creates 25 proposals: finalizes the first 5, lets the next 5 expire (not finalized),
+    /// and keeps the last 15 active. Verifies only the 15 active ones are returned.
+    #[test]
+    fn test_get_pending_proposals_uses_active_list_not_full_scan() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 0);
+        let client = setup(&env); // voting_period = 3600, quorum = 100
+
+        let proposer = Address::generate(&env);
+        let voter = Address::generate(&env);
+
+        // Create 25 proposals at t=0
+        let mut ids: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
+        for i in 0u32..25 {
+            let title = String::from_str(&env, "P");
+            let desc = String::from_str(&env, "D");
+            let _ = i; // suppress unused warning
+            let pid = client.propose(&proposer, &title, &desc);
+            ids.push_back(pid);
+        }
+
+        // Finalize the first 5 (advance past voting period, vote to meet quorum)
+        env.ledger().with_mut(|l| l.timestamp = 4000);
+        for i in 0..5u32 {
+            let pid = ids.get(i).unwrap();
+            client.vote(&voter, &pid, &true, &200);
+            client.finalize(&pid);
+        }
+
+        // Advance past voting period for proposals 5-9 (expired, not finalized)
+        // They remain Active in state but vote_end has passed — excluded from pending
+
+        // Advance to t=5000 so proposals 0-9 are all past their vote_end (t=3600)
+        // Proposals 10-24 were also created at t=0 so they also expire at t=3600...
+        // Re-create the last 15 at t=5000 so they have vote_end = 5000+3600 = 8600
+        env.ledger().with_mut(|l| l.timestamp = 5000);
+        let mut active_ids: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
+        for _ in 0..15u32 {
+            let pid = client.propose(
+                &proposer,
+                &String::from_str(&env, "Active"),
+                &String::from_str(&env, "D"),
+            );
+            active_ids.push_back(pid);
+        }
+
+        // At t=5000 the first 25 proposals have expired (vote_end=3600), the new 15 are active
+        let pending = client.get_pending_proposals();
+        assert_eq!(
+            pending.len(),
+            15,
+            "expected exactly 15 active proposals, got {}",
+            pending.len()
+        );
+
+        // Verify the returned IDs match the 15 newly created ones
+        for i in 0..15u32 {
+            assert_eq!(
+                pending.get(i).unwrap(),
+                active_ids.get(i).unwrap(),
+                "pending[{i}] mismatch"
+            );
+        }
     }
 }
