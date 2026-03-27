@@ -741,6 +741,41 @@ mod tests {
     }
 
     #[test]
+    fn test_approve_after_execute_reverts_with_already_executed() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 0);
+
+        let contract_id = env.register_contract(None, MultisigContract);
+        let client = MultisigContractClient::new(&env, &contract_id);
+        let o1 = Address::generate(&env);
+        let o2 = Address::generate(&env);
+        let o3 = Address::generate(&env);
+        client.initialize(&vec![&env, o1.clone(), o2.clone(), o3.clone()], &2, &3600);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let to = Address::generate(&env);
+        soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&contract_id, &500);
+
+        let pid = client.propose(&o1, &to, &token_id, &500);
+        client.approve(&o2, &pid);
+
+        env.ledger().with_mut(|l| l.timestamp = 7200);
+        client.execute(&o3, &pid);
+
+        // Try to approve with o3 (who hasn't voted yet) after execution
+        let result = client.try_approve(&o3, &pid);
+        assert_eq!(result, Err(Ok(MultisigError::AlreadyExecuted)));
+
+        // Also test reject() on executed proposal
+        let result = client.try_reject(&o3, &pid);
+        assert_eq!(result, Err(Ok(MultisigError::AlreadyExecuted)));
+    }
+
+    #[test]
     fn test_get_approval_count_zero() {
         let env = Env::default();
         env.mock_all_auths();
@@ -991,6 +1026,35 @@ mod tests {
         assert!(owners.contains(&o1));
         assert!(owners.contains(&o2));
         assert!(owners.contains(&o3));
+    }
+
+    /// Test that get_owner_list() and get_owners() return identical results.
+    /// get_owner_list() is documented as an alias for get_owners() and simply delegates to it.
+    /// This test verifies the delegation is correct and both functions return identical results.
+    #[test]
+    fn test_get_owner_list_and_get_owners_return_identical_results() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, o1, o2, o3) = setup_2of3(&env);
+
+        let owners = client.get_owners();
+        let owner_list = client.get_owner_list();
+
+        // Assert same length
+        assert_eq!(owners.len(), owner_list.len());
+
+        // Assert same elements in same order
+        for i in 0..owners.len() {
+            assert_eq!(owners.get(i).unwrap(), owner_list.get(i).unwrap());
+        }
+
+        // Assert all expected owners are present
+        assert!(owners.contains(&o1));
+        assert!(owners.contains(&o2));
+        assert!(owners.contains(&o3));
+        assert!(owner_list.contains(&o1));
+        assert!(owner_list.contains(&o2));
+        assert!(owner_list.contains(&o3));
     }
 
     // ── 1-of-N threshold tests ─────────────────────────────────────────────────

@@ -515,6 +515,55 @@ mod tests {
         assert_eq!(client.get_admin().unwrap(), new_admin);
     }
 
+    /// Test that transfer_admin() allows new admin to submit prices and old admin cannot.
+    /// This verifies that admin privileges are properly transferred and the old admin loses access.
+    #[test]
+    fn test_transfer_admin_new_admin_can_submit_old_admin_cannot() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let (admin_a, client) = setup(&env);
+        let admin_b = Address::generate(&env);
+
+        let base = Symbol::new(&env, "XLM");
+        let quote = Symbol::new(&env, "USDC");
+
+        // Transfer admin from admin_a to admin_b
+        client.transfer_admin(&admin_b);
+        assert_eq!(client.get_admin().unwrap(), admin_b);
+
+        // Mock auth as admin_b and call submit_price() — assert it succeeds
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin_b,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &env.register_contract(None, ForgeOracle),
+                fn_name: "submit_price",
+                args: (&base, &quote, 10_000_000i128).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let result = client.try_submit_price(&base, &quote, &10_000_000);
+        assert!(result.is_ok(), "New admin should be able to submit prices");
+
+        // Verify the price submitted by admin_b is correctly stored
+        let data = client.get_price(&base, &quote);
+        assert_eq!(data.price, 10_000_000);
+        assert_eq!(data.updated_at, 1000);
+
+        // Mock auth as admin_a and call submit_price() — assert it reverts
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin_a,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &env.register_contract(None, ForgeOracle),
+                fn_name: "submit_price",
+                args: (&base, &quote, 20_000_000i128).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let result = client.try_submit_price(&base, &quote, &20_000_000);
+        assert!(result.is_err(), "Old admin should not be able to submit prices");
+    }
+
     #[test]
     fn test_transfer_admin_emits_event() {
         use soroban_sdk::testutils::Events;
@@ -908,6 +957,40 @@ mod tests {
         assert_eq!(client.get_staleness_threshold().unwrap(), 7200);
 
         let _ = admin; // suppress unused warning
+    }
+
+    #[test]
+    fn test_set_staleness_threshold_affects_get_price() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 0);
+        let (_, client) = setup(&env);
+
+        let base = Symbol::new(&env, "XLM");
+        let quote = Symbol::new(&env, "USDC");
+
+        // Submit price at t=0, set staleness threshold to 3600
+        client.submit_price(&base, &quote, &10_000_000);
+        client.set_staleness_threshold(&3600);
+
+        // At t=1800, get_price should succeed (1800 < 0 + 3600)
+        env.ledger().with_mut(|l| l.timestamp = 1800);
+        let data = client.get_price(&base, &quote);
+        assert_eq!(data.price, 10_000_000);
+
+        // Tighten threshold to 600
+        client.set_staleness_threshold(&600);
+
+        // At t=1800, get_price should now fail (1800 > 0 + 600)
+        let result = client.try_get_price(&base, &quote);
+        assert_eq!(result, Err(Ok(OracleError::PriceStale)));
+
+        // Loosen threshold to 7200
+        client.set_staleness_threshold(&7200);
+
+        // At t=1800, get_price should succeed again (1800 < 0 + 7200)
+        let data = client.get_price(&base, &quote);
+        assert_eq!(data.price, 10_000_000);
     }
 }
 

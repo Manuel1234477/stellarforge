@@ -1662,6 +1662,11 @@ mod tests {
     /// Verifies that get_streams_by_sender() returns all stream IDs correctly when using persistent storage.
     #[test]
     fn test_get_streams_by_sender_many_streams() {
+    /// Test cancelling a paused stream correctly splits tokens.
+    /// When a stream is paused and then cancelled, only the active (non-paused) time counts.
+    /// Recipient receives tokens for active time, sender receives the rest.
+    #[test]
+    fn test_cancel_paused_stream_splits_tokens_correctly() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, ForgeStream);
@@ -1696,5 +1701,37 @@ mod tests {
                 "Stream ID at index {} does not match", i
             );
         }
+        let recipient = Address::generate(&env);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+        let sac = StellarAssetClient::new(&env, &token_id);
+        let token = TokenClient::new(&env, &token_id);
+        
+        let rate = 100i128;
+        let duration = 1000u64;
+        let total = rate * duration as i128; // 100,000 tokens
+        
+        sac.mint(&sender, &total);
+
+        // Create stream: rate=100, duration=1000, total=100,000
+        let stream_id = client.create_stream(&sender, &token_id, &recipient, &rate, &duration);
+
+        // At t=200, pause the stream (200 * 100 = 20,000 streamed so far)
+        env.ledger().with_mut(|l| l.timestamp += 200);
+        client.pause_stream(&stream_id);
+
+        // At t=400, cancel the stream (still paused for 200s, so still 20,000 streamed)
+        env.ledger().with_mut(|l| l.timestamp += 200);
+        client.cancel_stream(&stream_id);
+
+        // Verify recipient receives 100 * 200 = 20,000 tokens (only active time counts)
+        assert_eq!(token.balance(&recipient), 20_000);
+
+        // Verify sender receives 100,000 - 20,000 = 80,000 tokens back
+        assert_eq!(token.balance(&sender), 80_000);
+
+        // Assert no tokens are lost: recipient + sender == 100,000
+        assert_eq!(token.balance(&recipient) + token.balance(&sender), total);
     }
 }
