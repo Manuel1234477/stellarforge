@@ -10,7 +10,7 @@
 //! - Owners can propose, approve, reject, and execute transactions
 //! - Native token support via Stellar token interface
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, Symbol, Vec};
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -207,6 +207,11 @@ impl MultisigContract {
             .instance()
             .set(&DataKey::NextProposalId, &(proposal_id + 1));
 
+        env.events().publish(
+            (Symbol::new(&env, "proposal_created"),),
+            (proposal_id, &proposer, &to, &token, amount),
+        );
+
         Ok(proposal_id)
     }
 
@@ -255,7 +260,7 @@ impl MultisigContract {
             return Err(MultisigError::AlreadyVoted);
         }
 
-        proposal.approvals.push_back(owner);
+        proposal.approvals.push_back(owner.clone());
 
         let threshold: u32 = env.storage().instance().get(&DataKey::Threshold).unwrap();
         if proposal.approvals.len() >= threshold && proposal.approved_at.is_none() {
@@ -265,6 +270,11 @@ impl MultisigContract {
         env.storage()
             .persistent()
             .set(&DataKey::Proposal(proposal_id), &proposal);
+
+        env.events().publish(
+            (Symbol::new(&env, "proposal_approved"),),
+            (proposal_id, &owner, proposal.approvals.len()),
+        );
 
         Ok(())
     }
@@ -310,10 +320,15 @@ impl MultisigContract {
             return Err(MultisigError::AlreadyVoted);
         }
 
-        proposal.rejections.push_back(owner);
+        proposal.rejections.push_back(owner.clone());
         env.storage()
             .persistent()
             .set(&DataKey::Proposal(proposal_id), &proposal);
+
+        env.events().publish(
+            (Symbol::new(&env, "proposal_rejected"),),
+            (proposal_id, &owner, proposal.rejections.len()),
+        );
 
         Ok(())
     }
@@ -385,6 +400,11 @@ impl MultisigContract {
             &env.current_contract_address(),
             &proposal.to,
             &proposal.amount,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "proposal_executed"),),
+            (proposal_id, &executor, &proposal.to, proposal.amount),
         );
 
         Ok(())
@@ -1176,5 +1196,130 @@ mod tests {
             final_recipient_balance + final_contract_balance,
             FUNDED_AMOUNT
         );
+    }
+}
+
+    /// Test that propose() emits a proposal_created event with correct payload
+    #[test]
+    fn test_propose_emits_event() {
+        use soroban_sdk::testutils::Events;
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, o1, _, _) = setup_2of3(&env);
+        let token = Address::generate(&env);
+        let to = Address::generate(&env);
+
+        let pid = client.propose(&o1, &to, &token, &500);
+
+        let events = env.events().all();
+        let found = events.iter().any(|(_, topics, data)| {
+            topics
+                .get(0)
+                .and_then(|t| Symbol::try_from_val(&env, &t).ok())
+                .map(|s| s == Symbol::new(&env, "proposal_created"))
+                .unwrap_or(false)
+                && <(u64, Address, Address, Address, i128)>::try_from_val(&env, &data)
+                    .map(|(id, proposer, recipient, tok, amt)| {
+                        id == pid && proposer == o1 && recipient == to && tok == token && amt == 500
+                    })
+                    .unwrap_or(false)
+        });
+        assert!(found, "Expected proposal_created event not found");
+    }
+
+    /// Test that approve() emits a proposal_approved event with correct payload
+    #[test]
+    fn test_approve_emits_event() {
+        use soroban_sdk::testutils::Events;
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, o1, o2, _) = setup_2of3(&env);
+        let token = Address::generate(&env);
+        let to = Address::generate(&env);
+
+        let pid = client.propose(&o1, &to, &token, &500);
+        client.approve(&o2, &pid);
+
+        let events = env.events().all();
+        let found = events.iter().any(|(_, topics, data)| {
+            topics
+                .get(0)
+                .and_then(|t| Symbol::try_from_val(&env, &t).ok())
+                .map(|s| s == Symbol::new(&env, "proposal_approved"))
+                .unwrap_or(false)
+                && <(u64, Address, u32)>::try_from_val(&env, &data)
+                    .map(|(id, owner, count)| id == pid && owner == o2 && count == 2)
+                    .unwrap_or(false)
+        });
+        assert!(found, "Expected proposal_approved event not found");
+    }
+
+    /// Test that reject() emits a proposal_rejected event with correct payload
+    #[test]
+    fn test_reject_emits_event() {
+        use soroban_sdk::testutils::Events;
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, o1, o2, _) = setup_2of3(&env);
+        let token = Address::generate(&env);
+        let to = Address::generate(&env);
+
+        let pid = client.propose(&o1, &to, &token, &500);
+        client.reject(&o2, &pid);
+
+        let events = env.events().all();
+        let found = events.iter().any(|(_, topics, data)| {
+            topics
+                .get(0)
+                .and_then(|t| Symbol::try_from_val(&env, &t).ok())
+                .map(|s| s == Symbol::new(&env, "proposal_rejected"))
+                .unwrap_or(false)
+                && <(u64, Address, u32)>::try_from_val(&env, &data)
+                    .map(|(id, owner, count)| id == pid && owner == o2 && count == 1)
+                    .unwrap_or(false)
+        });
+        assert!(found, "Expected proposal_rejected event not found");
+    }
+
+    /// Test that execute() emits a proposal_executed event with correct payload
+    #[test]
+    fn test_execute_emits_event() {
+        use soroban_sdk::testutils::Events;
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 0);
+
+        let contract_id = env.register_contract(None, MultisigContract);
+        let client = MultisigContractClient::new(&env, &contract_id);
+        let o1 = Address::generate(&env);
+        let o2 = Address::generate(&env);
+        let o3 = Address::generate(&env);
+        client.initialize(&vec![&env, o1.clone(), o2.clone(), o3.clone()], &2, &3600);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+        let to = Address::generate(&env);
+        soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&contract_id, &500);
+
+        let pid = client.propose(&o1, &to, &token_id, &500);
+        client.approve(&o2, &pid);
+
+        env.ledger().with_mut(|l| l.timestamp = 7200);
+        client.execute(&o3, &pid);
+
+        let events = env.events().all();
+        let found = events.iter().any(|(_, topics, data)| {
+            topics
+                .get(0)
+                .and_then(|t| Symbol::try_from_val(&env, &t).ok())
+                .map(|s| s == Symbol::new(&env, "proposal_executed"))
+                .unwrap_or(false)
+                && <(u64, Address, Address, i128)>::try_from_val(&env, &data)
+                    .map(|(id, executor, recipient, amt)| {
+                        id == pid && executor == o3 && recipient == to && amt == 500
+                    })
+                    .unwrap_or(false)
+        });
+        assert!(found, "Expected proposal_executed event not found");
     }
 }
