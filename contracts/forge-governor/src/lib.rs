@@ -10,7 +10,7 @@
 //! - Timelock between approval and execution
 //! - Anyone can propose; execution is permissionless once passed
 
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Env, String, Symbol, Vec};
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -407,7 +407,7 @@ impl GovernorContract {
     /// # Errors
     /// - [`GovernorError::ProposalNotFound`] — No proposal exists with `proposal_id`.
     /// - [`GovernorError::AlreadyExecuted`] — The proposal has already been executed.
-    /// - [`GovernorError::ProposalNotPassed`] — The proposal did not reach `Passed` state.
+    /// - [`GovernorError::ProposalNotPassed`] — The proposal did not reach `Passed` state or is cancelled.
     /// - [`GovernorError::TimelockNotElapsed`] — The timelock delay has not fully passed.
     ///
     /// # Example
@@ -426,6 +426,9 @@ impl GovernorContract {
 
         if proposal.state == ProposalState::Executed {
             return Err(GovernorError::AlreadyExecuted);
+        }
+        if proposal.state == ProposalState::Cancelled {
+            return Err(GovernorError::ProposalNotPassed);
         }
         if proposal.state != ProposalState::Passed {
             return Err(GovernorError::ProposalNotPassed);
@@ -459,6 +462,89 @@ impl GovernorContract {
         env.events().publish(
             (Symbol::new(&env, "proposal_executed"),),
             (proposal_id, &executor),
+        );
+
+        Ok(())
+    }
+
+    /// Cancel an active proposal before voting ends.
+    ///
+    /// Only the original proposer can cancel a proposal, and only while voting is still open
+    /// (state is `Active` and current timestamp <= `vote_end`). Cancelling a proposal removes
+    /// it from the active proposals list and prevents further voting or execution.
+    /// Requires authorization from `proposer`.
+    ///
+    /// # Parameters
+    /// - `proposer` — The original proposer address. Must match the proposal's proposer.
+    /// - `proposal_id` — ID of the proposal to cancel.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// - [`GovernorError::ProposalNotFound`] — No proposal exists with `proposal_id`.
+    /// - [`GovernorError::Unauthorized`] — `proposer` is not the original proposal creator.
+    /// - [`GovernorError::VotingClosed`] — Voting period has ended or proposal is not in `Active` state.
+    /// - [`GovernorError::AlreadyCancelled`] — The proposal has already been cancelled.
+    ///
+    /// # Example
+    /// ```text
+    /// // Cancel a proposal before voting ends
+    /// client.cancel_proposal(&proposer, &proposal_id);
+    /// ```
+    pub fn cancel_proposal(
+        env: Env,
+        proposer: Address,
+        proposal_id: u64,
+    ) -> Result<(), GovernorError> {
+        proposer.require_auth();
+
+        let mut proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(GovernorError::ProposalNotFound)?;
+
+        // Only the original proposer can cancel
+        if proposal.proposer != proposer {
+            return Err(GovernorError::Unauthorized);
+        }
+
+        // Can only cancel if still in Active state
+        if proposal.state != ProposalState::Active {
+            if proposal.state == ProposalState::Cancelled {
+                return Err(GovernorError::AlreadyCancelled);
+            }
+            return Err(GovernorError::VotingClosed);
+        }
+
+        // Can only cancel while voting is still open
+        let now = env.ledger().timestamp();
+        if now > proposal.vote_end {
+            return Err(GovernorError::VotingClosed);
+        }
+
+        proposal.state = ProposalState::Cancelled;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
+
+        // Remove from active proposals list
+        let mut active: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveProposals)
+            .unwrap_or_else(|| Vec::new(&env));
+        if let Some(pos) = active.iter().position(|id| id == proposal_id) {
+            active.remove(pos as u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::ActiveProposals, &active);
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "proposal_cancelled"),),
+            (proposal_id, &proposer),
         );
 
         Ok(())
@@ -651,8 +737,8 @@ impl GovernorContract {
                 .persistent()
                 .get::<DataKey, Proposal>(&DataKey::Proposal(id))
             {
-                // state is always Active in the list, but exclude expired voting windows
-                if now <= proposal.vote_end {
+                // Exclude cancelled proposals and expired voting windows
+                if proposal.state != ProposalState::Cancelled && now <= proposal.vote_end {
                     pending.push_back(id);
                 }
             }
@@ -1655,5 +1741,168 @@ mod tests {
                     .unwrap_or(false)
         });
         assert!(found, "Expected proposal_executed event not found");
+    }
+
+    /// Test successful cancel: proposer can cancel an active proposal before voting ends
+    #[test]
+    fn test_cancel_proposal_successful() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "Test Proposal"),
+            &String::from_str(&env, "Description"),
+        );
+
+        // Verify proposal is active
+        assert_eq!(client.get_proposal_state(&pid), ProposalState::Active);
+
+        // Cancel the proposal
+        client.cancel_proposal(&proposer, &pid);
+
+        // Verify proposal is now cancelled
+        assert_eq!(client.get_proposal_state(&pid), ProposalState::Cancelled);
+    }
+
+    /// Test cancel by non-proposer: only the original proposer can cancel
+    #[test]
+    fn test_cancel_proposal_by_non_proposer_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let other = Address::generate(&env);
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "Test Proposal"),
+            &String::from_str(&env, "Description"),
+        );
+
+        // Try to cancel as a different address
+        let result = client.try_cancel_proposal(&other, &pid);
+        assert_eq!(result, Err(Ok(GovernorError::Unauthorized)));
+
+        // Verify proposal is still active
+        assert_eq!(client.get_proposal_state(&pid), ProposalState::Active);
+    }
+
+    /// Test cancel after voting ends: cannot cancel after voting period has ended
+    #[test]
+    fn test_cancel_proposal_after_voting_ends_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "Test Proposal"),
+            &String::from_str(&env, "Description"),
+        );
+
+        // Advance time past voting period (voting_period = 3600)
+        env.ledger().with_mut(|l| l.timestamp = 1000 + 3600 + 1);
+
+        // Try to cancel after voting ends
+        let result = client.try_cancel_proposal(&proposer, &pid);
+        assert_eq!(result, Err(Ok(GovernorError::VotingClosed)));
+
+        // Verify proposal is still active (not cancelled)
+        assert_eq!(client.get_proposal_state(&pid), ProposalState::Active);
+    }
+
+    /// Test execute after cancel: cannot execute a cancelled proposal
+    #[test]
+    fn test_execute_after_cancel_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let executor = Address::generate(&env);
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "Test Proposal"),
+            &String::from_str(&env, "Description"),
+        );
+
+        // Cancel the proposal
+        client.cancel_proposal(&proposer, &pid);
+
+        // Try to execute the cancelled proposal
+        let result = client.try_execute(&executor, &pid);
+        assert_eq!(result, Err(Ok(GovernorError::ProposalNotPassed)));
+
+        // Verify proposal is still cancelled
+        assert_eq!(client.get_proposal_state(&pid), ProposalState::Cancelled);
+    }
+
+    /// Test get_pending_proposals excludes cancelled proposals
+    #[test]
+    fn test_get_pending_proposals_excludes_cancelled() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+
+        // Create two proposals
+        let pid1 = client.propose(
+            &proposer,
+            &String::from_str(&env, "Proposal 1"),
+            &String::from_str(&env, "Description 1"),
+        );
+        let pid2 = client.propose(
+            &proposer,
+            &String::from_str(&env, "Proposal 2"),
+            &String::from_str(&env, "Description 2"),
+        );
+
+        // Both should be pending
+        let pending = client.get_pending_proposals();
+        assert_eq!(pending.len(), 2);
+        assert!(pending.contains(&pid1));
+        assert!(pending.contains(&pid2));
+
+        // Cancel the first proposal
+        client.cancel_proposal(&proposer, &pid1);
+
+        // Only the second proposal should be pending now
+        let pending = client.get_pending_proposals();
+        assert_eq!(pending.len(), 1);
+        assert!(!pending.contains(&pid1));
+        assert!(pending.contains(&pid2));
+    }
+
+    /// Test cancel already cancelled proposal: cannot cancel a proposal twice
+    #[test]
+    fn test_cancel_already_cancelled_proposal_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let client = setup(&env);
+
+        let proposer = Address::generate(&env);
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "Test Proposal"),
+            &String::from_str(&env, "Description"),
+        );
+
+        // Cancel the proposal
+        client.cancel_proposal(&proposer, &pid);
+
+        // Try to cancel again
+        let result = client.try_cancel_proposal(&proposer, &pid);
+        assert_eq!(result, Err(Ok(GovernorError::AlreadyCancelled)));
     }
 }
