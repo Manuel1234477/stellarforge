@@ -1959,4 +1959,68 @@ mod tests {
         let result = client.try_cancel_proposal(&proposer, &pid);
         assert_eq!(result, Err(Ok(GovernorError::AlreadyCancelled)));
     }
+
+    /// Test that NextProposalId is not incremented when propose() fails.
+    ///
+    /// Case 1: propose() on an uninitialized contract returns NotInitialized
+    ///         and get_proposal_count() stays at 0.
+    /// Case 2: After one valid proposal, a second invalid call (uninitialized
+    ///         contract) leaves get_proposal_count() at 1, not 2.
+    #[test]
+    fn test_failed_propose_does_not_increment_proposal_counter() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+
+        // ── Case 1: uninitialized contract ────────────────────────────────────
+        let contract_id = env.register_contract(None, GovernorContract);
+        let uninit_client = GovernorContractClient::new(&env, &contract_id);
+
+        let proposer = Address::generate(&env);
+        let result = uninit_client.try_propose(
+            &proposer,
+            &String::from_str(&env, "Should Fail"),
+            &String::from_str(&env, "Contract not initialized"),
+        );
+        assert_eq!(result, Err(Ok(GovernorError::NotInitialized)));
+
+        // Counter must still be 0 — the failed call must not have touched it
+        assert_eq!(
+            uninit_client.get_proposal_count(),
+            0,
+            "proposal count should remain 0 after failed propose on uninitialized contract"
+        );
+
+        // ── Case 2: one valid proposal, then a failed one on a separate uninit contract ──
+        let client = setup(&env);
+
+        // Valid proposal — counter goes to 1
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "Valid Proposal"),
+            &String::from_str(&env, "This one succeeds"),
+        );
+        assert_eq!(pid, 0, "first proposal id should be 0");
+        assert_eq!(client.get_proposal_count(), 1, "count should be 1 after one valid proposal");
+
+        // Failed propose on the still-uninitialized contract must not affect its counter
+        let result2 = uninit_client.try_propose(
+            &proposer,
+            &String::from_str(&env, "Should Also Fail"),
+            &String::from_str(&env, "Still not initialized"),
+        );
+        assert_eq!(result2, Err(Ok(GovernorError::NotInitialized)));
+        assert_eq!(
+            uninit_client.get_proposal_count(),
+            0,
+            "uninit contract count should still be 0 after second failed propose"
+        );
+
+        // The initialized contract's counter must be unaffected too
+        assert_eq!(
+            client.get_proposal_count(),
+            1,
+            "initialized contract count should still be 1"
+        );
+    }
 }
