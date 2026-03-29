@@ -10,7 +10,9 @@
 //! - Timelock between approval and execution
 //! - Anyone can propose; execution is permissionless once passed
 
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, token, Address, Env, String, Symbol, Vec,
+};
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -29,6 +31,8 @@ pub enum DataKey {
 #[contracttype]
 #[derive(Clone)]
 pub struct GovernorConfig {
+    /// Address authorized to initialize the contract (must call initialize()).
+    pub admin: Address,
     /// Token used for voting weight.
     pub vote_token: Address,
     /// Seconds a proposal is open for voting.
@@ -118,11 +122,12 @@ impl GovernorContract {
     /// Initialize the governor with its configuration.
     ///
     /// Stores the [`GovernorConfig`] on-chain. Must be called exactly once
-    /// immediately after deployment. Does not require auth — the deployer is
-    /// responsible for calling this before any proposals are created.
+    /// immediately after deployment. Requires authorization from the admin address
+    /// specified in the config to prevent front-running attacks.
     ///
     /// # Parameters
     /// - `config` — A [`GovernorConfig`] specifying:
+    ///   - `admin`: Address authorized to initialize the contract (must call this function).
     ///   - `vote_token`: Address of the Soroban token used for voting weight.
     ///   - `voting_period`: Seconds a proposal remains open for voting. Must be > 0.
     ///   - `quorum`: Minimum total votes (for + against) required for a proposal to pass. Must be > 0.
@@ -135,9 +140,15 @@ impl GovernorContract {
     /// - [`GovernorError::AlreadyInitialized`] — Contract has already been initialized.
     /// - [`GovernorError::InvalidConfig`] — `quorum` or `voting_period` is zero.
     ///
+    /// # Security
+    /// The admin address must authorize this call via `require_auth()`. This prevents
+    /// an attacker from front-running the deployer's initialization with a malicious config
+    /// (e.g., quorum = 1, timelock = 0).
+    ///
     /// # Example
     /// ```text
     /// let config = GovernorConfig {
+    ///     admin: deployer_address,
     ///     vote_token: token_address,
     ///     voting_period: 3600,  // 1 hour
     ///     quorum: 1_000_000,
@@ -146,6 +157,8 @@ impl GovernorContract {
     /// client.initialize(&config);
     /// ```
     pub fn initialize(env: Env, config: GovernorConfig) -> Result<(), GovernorError> {
+        config.admin.require_auth();
+
         if env.storage().instance().has(&DataKey::Config) {
             return Err(GovernorError::AlreadyInitialized);
         }
@@ -815,10 +828,13 @@ mod tests {
     fn setup(env: &Env) -> GovernorContractClient<'_> {
         let contract_id = env.register_contract(None, GovernorContract);
         let client = GovernorContractClient::new(env, &contract_id);
+        let admin = Address::generate(env);
         let token_admin = Address::generate(env);
         let token = env.register_stellar_asset_contract(token_admin);
         let config = GovernorConfig {
             vote_token: token_id,
+            admin,
+            vote_token: token,
             voting_period: 3600,
             quorum: 100,
             timelock_delay: 86400,
@@ -850,6 +866,64 @@ mod tests {
     }
 
     #[test]
+    fn test_initialize_requires_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, GovernorContract);
+        let client = GovernorContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract(token_admin);
+
+        // Attacker tries to initialize with their own config
+        let malicious_config = GovernorConfig {
+            admin: attacker.clone(),
+            vote_token: token.clone(),
+            voting_period: 1,  // Very short voting period
+            quorum: 1,         // Very low quorum
+            timelock_delay: 0, // No timelock
+        };
+
+        // This should fail because attacker is not the admin in the config
+        let result = client.try_initialize(&malicious_config);
+        assert!(
+            result.is_err(),
+            "initialize should fail when called by non-admin"
+        );
+
+        // Verify contract is still not initialized
+        assert!(
+            client.get_config().is_none(),
+            "config should not be set after failed initialize"
+        );
+
+        // Now admin initializes with proper config
+        let proper_config = GovernorConfig {
+            admin: admin.clone(),
+            vote_token: token.clone(),
+            voting_period: 3600,
+            quorum: 100,
+            timelock_delay: 86400,
+        };
+
+        let result = client.try_initialize(&proper_config);
+        assert!(
+            result.is_ok(),
+            "initialize should succeed when called by admin"
+        );
+
+        // Verify config is set
+        let config = client.get_config().unwrap();
+        assert_eq!(config.admin, admin);
+        assert_eq!(config.voting_period, 3600);
+        assert_eq!(config.quorum, 100);
+        assert_eq!(config.timelock_delay, 86400);
+    }
+
+    #[test]
     fn test_vote_and_pass() {
         let env = Env::default();
         env.mock_all_auths();
@@ -865,7 +939,7 @@ mod tests {
             &String::from_str(&env, "Test Proposal"),
             &String::from_str(&env, "A test"),
         );
-        
+
         let config = client.get_config().unwrap();
         let token_client = token::Client::new(&env, &config.vote_token);
         token_client.transfer(&token_client.address, &voter, &500);
@@ -1158,7 +1232,11 @@ mod tests {
         let client = setup(&env);
 
         let proposer = Address::generate(&env);
-        let pid = client.propose(&proposer, &String::from_str(&env, "P"), &String::from_str(&env, "D"));
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "P"),
+            &String::from_str(&env, "D"),
+        );
 
         env.ledger().with_mut(|l| l.timestamp = 5000);
         client.finalize(&pid); // fails: no votes
@@ -1176,7 +1254,11 @@ mod tests {
         let (client, token_id) = setup_with_token(&env);
 
         let proposer = Address::generate(&env);
-        let pid = client.propose(&proposer, &String::from_str(&env, "P"), &String::from_str(&env, "D"));
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "P"),
+            &String::from_str(&env, "D"),
+        );
 
         // Advance past voting_period (3600)
         env.ledger().with_mut(|l| l.timestamp = 5000);
@@ -1201,7 +1283,11 @@ mod tests {
         mint(&env, &token_id, &voter, 200);
         mint(&env, &token_id, &late_voter, 100);
 
-        let pid = client.propose(&proposer, &String::from_str(&env, "P"), &String::from_str(&env, "D"));
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "P"),
+            &String::from_str(&env, "D"),
+        );
         client.vote(&voter, &pid, &true, &200); // meets quorum
 
         env.ledger().with_mut(|l| l.timestamp = 5000);
@@ -1224,7 +1310,11 @@ mod tests {
         let late_voter = Address::generate(&env);
         mint(&env, &token_id, &late_voter, 100);
 
-        let pid = client.propose(&proposer, &String::from_str(&env, "P"), &String::from_str(&env, "D"));
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "P"),
+            &String::from_str(&env, "D"),
+        );
         // No votes — quorum not met → Failed
 
         env.ledger().with_mut(|l| l.timestamp = 5000);
@@ -1247,7 +1337,11 @@ mod tests {
         let executor = Address::generate(&env);
         mint(&env, &token_id, &voter, 200);
 
-        let pid = client.propose(&proposer, &String::from_str(&env, "P"), &String::from_str(&env, "D"));
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "P"),
+            &String::from_str(&env, "D"),
+        );
         client.vote(&voter, &pid, &true, &200);
         env.ledger().with_mut(|l| l.timestamp = 5000);
         client.finalize(&pid);
@@ -1274,7 +1368,11 @@ mod tests {
         let voter = Address::generate(&env);
         let executor = Address::generate(&env);
 
-        let pid = client.propose(&proposer, &String::from_str(&env, "P"), &String::from_str(&env, "D"));
+        let pid = client.propose(
+            &proposer,
+            &String::from_str(&env, "P"),
+            &String::from_str(&env, "D"),
+        );
         client.vote(&voter, &pid, &true, &200);
         env.ledger().with_mut(|l| l.timestamp = 5000);
         client.finalize(&pid);
@@ -1389,8 +1487,16 @@ mod tests {
         let client = setup(&env);
 
         let proposer = Address::generate(&env);
-        let pid0 = client.propose(&proposer, &String::from_str(&env, "P0"), &String::from_str(&env, "D"));
-        let pid1 = client.propose(&proposer, &String::from_str(&env, "P1"), &String::from_str(&env, "D"));
+        let pid0 = client.propose(
+            &proposer,
+            &String::from_str(&env, "P0"),
+            &String::from_str(&env, "D"),
+        );
+        let pid1 = client.propose(
+            &proposer,
+            &String::from_str(&env, "P1"),
+            &String::from_str(&env, "D"),
+        );
 
         let pending = client.get_pending_proposals();
         assert_eq!(pending.len(), 2);
@@ -1410,11 +1516,19 @@ mod tests {
         mint(&env, &token_id, &voter, 200);
 
         // pid0: will be finalized (passed)
-        let pid0 = client.propose(&proposer, &String::from_str(&env, "P0"), &String::from_str(&env, "D"));
+        let pid0 = client.propose(
+            &proposer,
+            &String::from_str(&env, "P0"),
+            &String::from_str(&env, "D"),
+        );
         client.vote(&voter, &pid0, &true, &200);
 
         // pid1: will remain active but its voting window also expires at t=5000
-        let _pid1 = client.propose(&proposer, &String::from_str(&env, "P1"), &String::from_str(&env, "D"));
+        let _pid1 = client.propose(
+            &proposer,
+            &String::from_str(&env, "P1"),
+            &String::from_str(&env, "D"),
+        );
 
         // Advance past voting period and finalize pid0
         env.ledger().with_mut(|l| l.timestamp = 5000);
@@ -1462,15 +1576,27 @@ mod tests {
         mint(&env, &token_id, &voter, 200);
 
         // pid0: finalized (passed) at t=5000
-        let pid0 = client.propose(&proposer, &String::from_str(&env, "P0"), &String::from_str(&env, "D"));
+        let pid0 = client.propose(
+            &proposer,
+            &String::from_str(&env, "P0"),
+            &String::from_str(&env, "D"),
+        );
         client.vote(&voter, &pid0, &true, &200);
 
         env.ledger().with_mut(|l| l.timestamp = 5000);
         client.finalize(&pid0);
 
         // pid1 and pid2 proposed after the advance — still in voting window
-        let pid1 = client.propose(&proposer, &String::from_str(&env, "P1"), &String::from_str(&env, "D"));
-        let pid2 = client.propose(&proposer, &String::from_str(&env, "P2"), &String::from_str(&env, "D"));
+        let pid1 = client.propose(
+            &proposer,
+            &String::from_str(&env, "P1"),
+            &String::from_str(&env, "D"),
+        );
+        let pid2 = client.propose(
+            &proposer,
+            &String::from_str(&env, "P2"),
+            &String::from_str(&env, "D"),
+        );
 
         let pending = client.get_pending_proposals();
         assert_eq!(pending.len(), 2);
@@ -1524,7 +1650,10 @@ mod tests {
         assert_eq!(proposal.state, ProposalState::Failed);
         assert_eq!(proposal.votes_for, 100);
         assert_eq!(proposal.votes_against, 100);
-        assert!(proposal.passed_at.is_none(), "passed_at must not be set on a failed proposal");
+        assert!(
+            proposal.passed_at.is_none(),
+            "passed_at must not be set on a failed proposal"
+        );
     }
 
     /// One extra no vote tips a near-tie to Failed.
@@ -1819,7 +1948,10 @@ mod tests {
         client.vote(&voter, &pid, &true, &200);
 
         let events = env.events().all();
-        assert!(events.len() >= 2, "Expected at least two events (propose + vote)");
+        assert!(
+            events.len() >= 2,
+            "Expected at least two events (propose + vote)"
+        );
     }
 
     #[test]
@@ -1843,7 +1975,10 @@ mod tests {
         client.finalize(&pid);
 
         let events = env.events().all();
-        assert!(events.len() >= 3, "Expected at least three events (propose + vote + finalize)");
+        assert!(
+            events.len() >= 3,
+            "Expected at least three events (propose + vote + finalize)"
+        );
     }
 
     #[test]
@@ -1871,7 +2006,10 @@ mod tests {
         client.execute(&executor, &pid);
 
         let events = env.events().all();
-        assert!(events.len() >= 4, "Expected at least four events (propose + vote + finalize + execute)");
+        assert!(
+            events.len() >= 4,
+            "Expected at least four events (propose + vote + finalize + execute)"
+        );
     }
 
     /// Test successful cancel: proposer can cancel an active proposal before voting ends
@@ -2078,7 +2216,11 @@ mod tests {
             &String::from_str(&env, "This one succeeds"),
         );
         assert_eq!(pid, 0, "first proposal id should be 0");
-        assert_eq!(client.get_proposal_count(), 1, "count should be 1 after one valid proposal");
+        assert_eq!(
+            client.get_proposal_count(),
+            1,
+            "count should be 1 after one valid proposal"
+        );
 
         // Failed propose on the still-uninitialized contract must not affect its counter
         let result2 = uninit_client.try_propose(
