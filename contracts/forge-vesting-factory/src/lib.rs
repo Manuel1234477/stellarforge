@@ -11,6 +11,7 @@
 //! - Admins call `cancel(schedule_id)` to cancel a schedule and reclaim unvested tokens
 //! - Reduces deployment costs dramatically for multi-beneficiary vesting (e.g. employee grants)
 
+use forge_errors::CommonError;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, Env, Symbol,
 };
@@ -61,8 +62,9 @@ pub struct VestingStatus {
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum FactoryError {
+    #[from(CommonError)]
+    Common(CommonError),
     ScheduleNotFound = 1,
-    Unauthorized = 2,
     CliffNotReached = 3,
     NothingToClaim = 4,
     Cancelled = 5,
@@ -106,7 +108,7 @@ impl ForgeVestingFactory {
         admin.require_auth();
 
         if total_amount <= 0 || duration_seconds == 0 || cliff_seconds > duration_seconds {
-            return Err(FactoryError::InvalidConfig);
+            return Err(FactoryError::Common(CommonError::InvalidConfig));
         }
 
         let id: u64 = env
@@ -561,17 +563,23 @@ mod tests {
 
         // zero total_amount
         assert_eq!(
-            client.try_create_schedule(&token, &b, &admin, &0, &0, &1_000).unwrap_err(),
+            client
+                .try_create_schedule(&token, &b, &admin, &0, &0, &1_000)
+                .unwrap_err(),
             Ok(FactoryError::InvalidConfig)
         );
         // zero duration
         assert_eq!(
-            client.try_create_schedule(&token, &b, &admin, &1_000, &0, &0).unwrap_err(),
+            client
+                .try_create_schedule(&token, &b, &admin, &1_000, &0, &0)
+                .unwrap_err(),
             Ok(FactoryError::InvalidConfig)
         );
         // cliff > duration
         assert_eq!(
-            client.try_create_schedule(&token, &b, &admin, &1_000, &500, &100).unwrap_err(),
+            client
+                .try_create_schedule(&token, &b, &admin, &1_000, &500, &100)
+                .unwrap_err(),
             Ok(FactoryError::InvalidConfig)
         );
     }

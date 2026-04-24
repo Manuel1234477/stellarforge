@@ -10,6 +10,7 @@
 //! - Configurable staleness threshold — reads revert if price is too old
 //! - Event emission on every price update
 
+use forge_errors::CommonError;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, vec, Address, Env, Symbol, Vec,
 };
@@ -1563,7 +1564,10 @@ mod tests {
 
         // Step 4: 9% increase → 10_900_000; deviation = (900_000 * 10_000) / 10_000_000 = 900 bps <= 1000 → accepted
         let result = client.try_submit_price(&base, &quote, &10_900_000);
-        assert!(result.is_ok(), "9% increase must be accepted within 10% threshold");
+        assert!(
+            result.is_ok(),
+            "9% increase must be accepted within 10% threshold"
+        );
         assert_eq!(client.get_price_unsafe(&base, &quote).price, 10_900_000);
 
         // Step 5: 17% decrease from 10_900_000 → 9_000_000

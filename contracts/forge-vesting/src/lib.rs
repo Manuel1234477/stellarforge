@@ -10,6 +10,7 @@
 //! - Beneficiary can call `claim()` at any time to withdraw unlocked tokens
 //! - Admin can cancel vesting and reclaim unvested tokens
 
+use forge_errors::CommonError;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, Env, Symbol,
 };
@@ -88,13 +89,11 @@ pub struct VestingSchedule {
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum VestingError {
-    AlreadyInitialized = 1,
-    NotInitialized = 2,
-    Unauthorized = 3,
+    #[from(CommonError)]
+    Common(CommonError),
     CliffNotReached = 4,
     NothingToClaim = 5,
     Cancelled = 6,
-    InvalidConfig = 7,
     SameAdmin = 8,
     SameBeneficiary = 11,
     BeneficiaryAsAdmin = 12,
@@ -149,10 +148,10 @@ impl ForgeVesting {
         duration_seconds: u64,
     ) -> Result<(), VestingError> {
         if env.storage().instance().has(&DataKey::Config) {
-            return Err(VestingError::AlreadyInitialized);
+            return Err(VestingError::Common(CommonError::AlreadyInitialized));
         }
         if total_amount <= 0 || duration_seconds == 0 || cliff_seconds > duration_seconds {
-            return Err(VestingError::InvalidConfig);
+            return Err(VestingError::Common(CommonError::InvalidConfig));
         }
         if admin == beneficiary {
             return Err(VestingError::BeneficiaryAsAdmin);
@@ -220,7 +219,7 @@ impl ForgeVesting {
         }
 
         if config.paused {
-            return Err(VestingError::Paused);
+            return Err(VestingError::Common(CommonError::Unauthorized));
         }
 
         config.beneficiary.require_auth();
@@ -360,7 +359,7 @@ impl ForgeVesting {
             return Err(VestingError::Cancelled);
         }
         if config.paused {
-            return Err(VestingError::Paused);
+            return Err(VestingError::Common(CommonError::Unauthorized));
         }
 
         config.admin.require_auth();
@@ -647,7 +646,7 @@ impl ForgeVesting {
         config.admin.require_auth();
 
         if config.paused {
-            return Err(VestingError::Paused);
+            return Err(VestingError::Common(CommonError::Unauthorized));
         }
 
         config.paused = true;
@@ -676,7 +675,7 @@ impl ForgeVesting {
         config.admin.require_auth();
 
         if !config.paused {
-            return Err(VestingError::NotPaused);
+            return Err(VestingError::Common(CommonError::NotInitialized));
         }
 
         let now = env.ledger().timestamp();

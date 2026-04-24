@@ -8,6 +8,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+forge-errors = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { version = "21.7.6", features = ["testutils"] }

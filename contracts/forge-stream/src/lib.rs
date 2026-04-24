@@ -10,6 +10,7 @@
 //! - Sender can cancel and reclaim unstreamed tokens
 //! - Multiple streams can run in parallel (keyed by stream_id)
 
+use forge_errors::CommonError;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, Env, Symbol,
 };
@@ -89,7 +90,9 @@ pub struct StreamStatus {
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum StreamError {
-    StreamNotFound = 1,
+    #[from(CommonError)]
+    Common(CommonError),
+    StreamNotFound = 2,
     Unauthorized = 2,
     NothingToWithdraw = 3,
     AlreadyCancelled = 4,
@@ -144,7 +147,7 @@ impl ForgeStream {
         duration_seconds: u64,
     ) -> Result<u64, StreamError> {
         if rate_per_second <= 0 || duration_seconds == 0 {
-            return Err(StreamError::InvalidConfig);
+            return Err(StreamError::Common(CommonError::InvalidConfig));
         }
 
         sender.require_auth();
@@ -456,7 +459,7 @@ impl ForgeStream {
         }
 
         if stream.is_paused {
-            return Err(StreamError::InvalidConfig); // Already paused
+            return Err(StreamError::Common(CommonError::InvalidConfig)); // Already paused
         }
 
         let now = env.ledger().timestamp();
@@ -521,7 +524,7 @@ impl ForgeStream {
         }
 
         if !stream.is_paused {
-            return Err(StreamError::InvalidConfig); // Not paused
+            return Err(StreamError::Common(CommonError::InvalidConfig)); // Not paused
         }
 
         let now = env.ledger().timestamp();
@@ -792,7 +795,7 @@ impl ForgeStream {
         additional_seconds: u64,
     ) -> Result<(), StreamError> {
         if additional_seconds == 0 {
-            return Err(StreamError::InvalidConfig);
+            return Err(StreamError::Common(CommonError::InvalidConfig));
         }
 
         Self::validate_stream_id(&env, stream_id)?;
@@ -1212,8 +1215,7 @@ mod tests {
         StellarAssetClient::new(&env, &token_id).mint(&sender, &100_000i128);
 
         // rate=100, duration=1000 → total=100_000
-        let stream_id =
-            client.create_stream(&sender, &token_id, &recipient, &100, &1000);
+        let stream_id = client.create_stream(&sender, &token_id, &recipient, &100, &1000);
         // Advance past end_time without withdrawing
         env.ledger().with_mut(|l| l.timestamp += 2000);
 
@@ -1617,7 +1619,10 @@ mod tests {
                     .map(|id| id == stream_id)
                     .unwrap_or(false)
         });
-        assert!(found, "Expected stream_paused event with stream_id={stream_id} not found");
+        assert!(
+            found,
+            "Expected stream_paused event with stream_id={stream_id} not found"
+        );
     }
 
     /// resume_stream() must emit a "stream_resumed" event whose data contains
@@ -1652,7 +1657,10 @@ mod tests {
                     .map(|id| id == stream_id)
                     .unwrap_or(false)
         });
-        assert!(found, "Expected stream_resumed event with stream_id={stream_id} not found");
+        assert!(
+            found,
+            "Expected stream_resumed event with stream_id={stream_id} not found"
+        );
     }
 
     /// A failed pause_stream() (already paused) must not emit a stream_paused
@@ -1678,14 +1686,20 @@ mod tests {
 
         // Only one stream_paused event should exist (from the first call)
         let events = env.events().all();
-        let pause_event_count = events.iter().filter(|(_, topics, _)| {
-            topics
-                .get(0)
-                .and_then(|t| Symbol::try_from_val(&env, &t).ok())
-                .map(|s| s == Symbol::new(&env, "stream_paused"))
-                .unwrap_or(false)
-        }).count();
-        assert_eq!(pause_event_count, 1, "Expected exactly 1 stream_paused event, got {pause_event_count}");
+        let pause_event_count = events
+            .iter()
+            .filter(|(_, topics, _)| {
+                topics
+                    .get(0)
+                    .and_then(|t| Symbol::try_from_val(&env, &t).ok())
+                    .map(|s| s == Symbol::new(&env, "stream_paused"))
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(
+            pause_event_count, 1,
+            "Expected exactly 1 stream_paused event, got {pause_event_count}"
+        );
     }
 
     #[test]
@@ -2800,8 +2814,16 @@ mod tests {
         env.ledger().with_mut(|l| l.timestamp = 100);
         client.cancel_stream(&stream_id);
 
-        assert_eq!(token.balance(&recipient), 10_000, "recipient should get 10,000");
-        assert_eq!(token.balance(&sender), 350_000, "sender should be refunded 350,000");
+        assert_eq!(
+            token.balance(&recipient),
+            10_000,
+            "recipient should get 10,000"
+        );
+        assert_eq!(
+            token.balance(&sender),
+            350_000,
+            "sender should be refunded 350,000"
+        );
         assert_eq!(
             token.balance(&recipient) + token.balance(&sender),
             total,
@@ -2841,8 +2863,7 @@ mod tests {
 
         let rate: i128 = 100;
         let duration: u64 = 3600;
-        let (_, recipient, _, stream_id) =
-            make_stream_for_events(&env, &client, rate, duration);
+        let (_, recipient, _, stream_id) = make_stream_for_events(&env, &client, rate, duration);
 
         let events = env.events().all();
         let found = events.iter().any(|(_, topics, data)| {
@@ -2857,7 +2878,10 @@ mod tests {
                     })
                     .unwrap_or(false)
         });
-        assert!(found, "Expected stream_created event with correct payload not found");
+        assert!(
+            found,
+            "Expected stream_created event with correct payload not found"
+        );
     }
 
     #[test]
@@ -2871,8 +2895,7 @@ mod tests {
 
         let rate: i128 = 100;
         let duration: u64 = 3600;
-        let (_, recipient, _, stream_id) =
-            make_stream_for_events(&env, &client, rate, duration);
+        let (_, recipient, _, stream_id) = make_stream_for_events(&env, &client, rate, duration);
 
         // Advance 50s so there are tokens to withdraw
         env.ledger().with_mut(|l| l.timestamp = 50);
@@ -2889,7 +2912,10 @@ mod tests {
                     .map(|(id, r, amt)| id == stream_id && r == recipient && amt == amount)
                     .unwrap_or(false)
         });
-        assert!(found, "Expected withdrawn event with correct payload not found");
+        assert!(
+            found,
+            "Expected withdrawn event with correct payload not found"
+        );
     }
 
     #[test]
@@ -2903,8 +2929,7 @@ mod tests {
 
         let rate: i128 = 100;
         let duration: u64 = 3600;
-        let (_, _, _, stream_id) =
-            make_stream_for_events(&env, &client, rate, duration);
+        let (_, _, _, stream_id) = make_stream_for_events(&env, &client, rate, duration);
 
         // Advance 100s so some tokens have streamed
         env.ledger().with_mut(|l| l.timestamp = 100);
@@ -2927,7 +2952,10 @@ mod tests {
                     })
                     .unwrap_or(false)
         });
-        assert!(found, "Expected stream_cancelled event with correct payload not found");
+        assert!(
+            found,
+            "Expected stream_cancelled event with correct payload not found"
+        );
     }
 
     #[test]
@@ -2939,8 +2967,7 @@ mod tests {
         let contract_id = env.register_contract(None, ForgeStream);
         let client = ForgeStreamClient::new(&env, &contract_id);
 
-        let (_, _, _, stream_id) =
-            make_stream_for_events(&env, &client, 100, 3600);
+        let (_, _, _, stream_id) = make_stream_for_events(&env, &client, 100, 3600);
 
         env.ledger().with_mut(|l| l.timestamp = 50);
         client.pause_stream(&stream_id);
@@ -2968,8 +2995,7 @@ mod tests {
         let contract_id = env.register_contract(None, ForgeStream);
         let client = ForgeStreamClient::new(&env, &contract_id);
 
-        let (_, _, _, stream_id) =
-            make_stream_for_events(&env, &client, 100, 3600);
+        let (_, _, _, stream_id) = make_stream_for_events(&env, &client, 100, 3600);
 
         env.ledger().with_mut(|l| l.timestamp = 50);
         client.pause_stream(&stream_id);
@@ -3060,9 +3086,18 @@ mod tests {
         let status = client.get_stream_status(&stream_id);
 
         assert!(status.is_paused, "stream should be paused");
-        assert!(!status.is_active, "paused stream must not be active (not accruing)");
-        assert_eq!(status.withdrawable, 20_000, "20,000 tokens accrued before pause");
-        assert!(status.is_claimable, "paused stream with accrued tokens must be claimable");
+        assert!(
+            !status.is_active,
+            "paused stream must not be active (not accruing)"
+        );
+        assert_eq!(
+            status.withdrawable, 20_000,
+            "20,000 tokens accrued before pause"
+        );
+        assert!(
+            status.is_claimable,
+            "paused stream with accrued tokens must be claimable"
+        );
     }
 
     // ── Issue #338: extend_stream() comprehensive coverage ───────────────────
