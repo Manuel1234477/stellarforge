@@ -47,8 +47,8 @@ pub struct VestingConfig {
     pub cancelled: bool,
     /// Whether vesting is currently paused
     pub paused: bool,
-    /// Ledger timestamp when vesting was paused (0 if not paused)
-    pub paused_at: u64,
+    /// Ledger timestamp when vesting was paused (None if not paused)
+    pub paused_at: Option<u64>,
 }
 
 #[contracttype]
@@ -169,7 +169,7 @@ impl ForgeVesting {
             duration_seconds,
             cancelled: false,
             paused: false,
-            paused_at: 0,
+            paused_at: None,
         };
 
         env.storage().instance().set(&DataKey::Config, &config);
@@ -645,12 +645,16 @@ impl ForgeVesting {
 
         config.admin.require_auth();
 
+        if config.cancelled {
+            return Err(VestingError::Cancelled);
+        }
+
         if config.paused {
             return Err(VestingError::Common(CommonError::Unauthorized));
         }
 
         config.paused = true;
-        config.paused_at = env.ledger().timestamp();
+        config.paused_at = Some(env.ledger().timestamp());
         env.storage().instance().set(&DataKey::Config, &config);
 
         Ok(())
@@ -674,15 +678,20 @@ impl ForgeVesting {
 
         config.admin.require_auth();
 
+        if config.cancelled {
+            return Err(VestingError::Cancelled);
+        }
+
         if !config.paused {
             return Err(VestingError::Common(CommonError::NotInitialized));
         }
 
         let now = env.ledger().timestamp();
-        let delta = now.saturating_sub(config.paused_at);
+        let paused_at = config.paused_at.unwrap_or(now);
+        let delta = now.saturating_sub(paused_at);
         config.start_time = config.start_time.saturating_add(delta);
         config.paused = false;
-        config.paused_at = 0;
+        config.paused_at = None;
         env.storage().instance().set(&DataKey::Config, &config);
 
         Ok(())
@@ -702,7 +711,7 @@ impl ForgeVesting {
         if config.cancelled {
             return 0;
         }
-        let effective_now = if config.paused { config.paused_at } else { now };
+        let effective_now = if config.paused { config.paused_at.unwrap_or(now) } else { now };
         let elapsed = effective_now.saturating_sub(config.start_time);
         if elapsed < config.cliff_seconds {
             return 0;
@@ -1722,7 +1731,7 @@ mod tests {
 
         let config = client.get_config();
         assert!(!config.paused);
-        assert_eq!(config.paused_at, 0);
+        assert_eq!(config.paused_at, None);
         // start_time shifted by 200s
         assert_eq!(config.start_time, original_start + 200);
         // effective end_time = new start_time + duration = original_start + 200 + 1000
