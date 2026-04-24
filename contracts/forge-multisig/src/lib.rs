@@ -10,6 +10,7 @@
 //! - Owners can propose, approve, reject, and execute transactions
 //! - Native token support via Stellar token interface
 
+use forge_errors::CommonError;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, Env, Symbol, Vec,
 };
@@ -71,12 +72,10 @@ pub struct Proposal {
 // ── Errors ────────────────────────────────────────────────────────────────────
 
 #[contracterror]
-#[derive(Copy, Clone, PartialEq, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum MultisigError {
-    AlreadyInitialized = 1,
-    NotInitialized = 2,
-    Unauthorized = 3,
-    ProposalNotFound = 4,
+    #[from(CommonError)]
+    Common(CommonError),
     AlreadyVoted = 5,
     TimelockNotElapsed = 6,
     AlreadyExecuted = 7,
@@ -130,7 +129,7 @@ impl MultisigContract {
         timelock_delay: u64,
     ) -> Result<(), MultisigError> {
         if env.storage().instance().has(&DataKey::Owners) {
-            return Err(MultisigError::AlreadyInitialized);
+            return Err(MultisigError::Common(CommonError::AlreadyInitialized));
         }
 
         // Deduplicate owners to ensure uniqueness
@@ -142,7 +141,7 @@ impl MultisigContract {
         }
 
         if threshold == 0 || threshold > unique_owners.len() {
-            return Err(MultisigError::InvalidThreshold);
+            return Err(MultisigError::Common(CommonError::InvalidThreshold));
         }
         env.storage()
             .instance()
@@ -198,7 +197,7 @@ impl MultisigContract {
         Self::require_owner(&env, &proposer)?;
 
         if amount <= 0 {
-            return Err(MultisigError::InvalidAmount);
+            return Err(MultisigError::Common(CommonError::InvalidAmount));
         }
 
         let proposal_id: u64 = env
@@ -308,7 +307,7 @@ impl MultisigContract {
         Self::require_owner(&env, &proposer)?;
 
         if amount <= 0 {
-            return Err(MultisigError::InvalidAmount);
+            return Err(MultisigError::Common(CommonError::InvalidAmount));
         }
 
         let proposal_id: u64 = env
@@ -410,13 +409,13 @@ impl MultisigContract {
             .storage()
             .persistent()
             .get(&DataKey::Proposal(proposal_id))
-            .ok_or(MultisigError::ProposalNotFound)?;
+            .ok_or(MultisigError::Common(CommonError::ProposalNotFound))?;
 
         if proposal.executed {
-            return Err(MultisigError::AlreadyExecuted);
+            return Err(MultisigError::Common(CommonError::AlreadyExecuted));
         }
         if proposal.cancelled {
-            return Err(MultisigError::AlreadyCancelled);
+            return Err(MultisigError::Common(CommonError::AlreadyCancelled));
         }
         if env
             .storage()
@@ -429,7 +428,7 @@ impl MultisigContract {
                 .get::<DataKey, bool>(&DataKey::HasRejected(proposal_id, owner.clone()))
                 .unwrap_or(false)
         {
-            return Err(MultisigError::AlreadyVoted);
+            return Err(MultisigError::Common(CommonError::AlreadyVoted));
         }
 
         proposal.approval_count = proposal.approval_count.saturating_add(1);
@@ -507,13 +506,13 @@ impl MultisigContract {
             .storage()
             .persistent()
             .get(&DataKey::Proposal(proposal_id))
-            .ok_or(MultisigError::ProposalNotFound)?;
+            .ok_or(MultisigError::Common(CommonError::ProposalNotFound))?;
 
         if proposal.executed {
-            return Err(MultisigError::AlreadyExecuted);
+            return Err(MultisigError::Common(CommonError::AlreadyExecuted));
         }
         if proposal.cancelled {
-            return Err(MultisigError::AlreadyCancelled);
+            return Err(MultisigError::Common(CommonError::AlreadyCancelled));
         }
         if env
             .storage()
@@ -526,7 +525,7 @@ impl MultisigContract {
                 .get::<DataKey, bool>(&DataKey::HasRejected(proposal_id, owner.clone()))
                 .unwrap_or(false)
         {
-            return Err(MultisigError::AlreadyVoted);
+            return Err(MultisigError::Common(CommonError::AlreadyVoted));
         }
 
         proposal.rejection_count = proposal.rejection_count.saturating_add(1);
@@ -939,7 +938,7 @@ impl MultisigContract {
     fn require_owner(env: &Env, address: &Address) -> Result<(), MultisigError> {
         // Guard against calls before initialize() — IsOwner keys only exist post-init.
         if !env.storage().instance().has(&DataKey::Owners) {
-            return Err(MultisigError::NotInitialized);
+            return Err(MultisigError::Common(CommonError::NotInitialized));
         }
         let is_owner: bool = env
             .storage()
@@ -949,7 +948,7 @@ impl MultisigContract {
         if is_owner {
             Ok(())
         } else {
-            Err(MultisigError::Unauthorized)
+            return Err(MultisigError::Common(CommonError::Unauthorized));
         }
     }
 }
@@ -2620,7 +2619,14 @@ mod tests {
 
         // 3-of-5 multisig, zero timelock
         client.initialize(
-            &vec![&env, o1.clone(), o2.clone(), o3.clone(), o4.clone(), o5.clone()],
+            &vec![
+                &env,
+                o1.clone(),
+                o2.clone(),
+                o3.clone(),
+                o4.clone(),
+                o5.clone(),
+            ],
             &3,
             &0,
         );
@@ -2666,10 +2672,16 @@ mod tests {
 
         // o5 calls cancel() — remaining=1 < threshold=3 → success
         let result = client.try_cancel(&o5, &pid);
-        assert!(result.is_ok(), "cancel must succeed when threshold is unreachable");
+        assert!(
+            result.is_ok(),
+            "cancel must succeed when threshold is unreachable"
+        );
 
         // Verify proposal is cancelled
         let proposal = client.get_proposal(&pid).unwrap();
-        assert!(proposal.cancelled, "proposal.cancelled must be true after successful cancel");
+        assert!(
+            proposal.cancelled,
+            "proposal.cancelled must be true after successful cancel"
+        );
     }
 }

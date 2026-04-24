@@ -10,6 +10,7 @@
 //! - Sender can cancel and reclaim unstreamed tokens
 //! - Multiple streams can run in parallel (keyed by stream_id)
 
+use forge_errors::CommonError;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, Env, Symbol,
 };
@@ -91,7 +92,9 @@ pub struct StreamStatus {
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum StreamError {
-    StreamNotFound = 1,
+    #[from(CommonError)]
+    Common(CommonError),
+    StreamNotFound = 2,
     Unauthorized = 2,
     NothingToWithdraw = 3,
     AlreadyCancelled = 4,
@@ -150,6 +153,8 @@ impl ForgeStream {
         duration_seconds: u64,
         min_withdrawal_amount: i128,
     ) -> Result<u64, StreamError> {
+        if rate_per_second <= 0 || duration_seconds == 0 {
+            return Err(StreamError::Common(CommonError::InvalidConfig));
         if rate_per_second <= 0 || duration_seconds == 0 || min_withdrawal_amount < 0 {
             return Err(StreamError::InvalidConfig);
         }
@@ -478,7 +483,7 @@ impl ForgeStream {
         }
 
         if stream.is_paused {
-            return Err(StreamError::InvalidConfig); // Already paused
+            return Err(StreamError::Common(CommonError::InvalidConfig)); // Already paused
         }
 
         let now = env.ledger().timestamp();
@@ -543,7 +548,7 @@ impl ForgeStream {
         }
 
         if !stream.is_paused {
-            return Err(StreamError::InvalidConfig); // Not paused
+            return Err(StreamError::Common(CommonError::InvalidConfig)); // Not paused
         }
 
         let now = env.ledger().timestamp();
@@ -816,7 +821,7 @@ impl ForgeStream {
         additional_seconds: u64,
     ) -> Result<(), StreamError> {
         if additional_seconds == 0 {
-            return Err(StreamError::InvalidConfig);
+            return Err(StreamError::Common(CommonError::InvalidConfig));
         }
 
         Self::validate_stream_id(&env, stream_id)?;

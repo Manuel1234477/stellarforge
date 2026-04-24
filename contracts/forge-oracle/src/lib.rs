@@ -10,6 +10,7 @@
 //! - Configurable staleness threshold — reads revert if price is too old
 //! - Event emission on every price update
 
+use forge_errors::CommonError;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, Vec,
 };

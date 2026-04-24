@@ -10,6 +10,7 @@
 //! - Timelock between approval and execution
 //! - Anyone can propose; execution is permissionless once passed
 
+use forge_errors::CommonError;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, Env, String, Symbol, Vec,
 };
@@ -139,19 +140,19 @@ pub struct Proposal {
 #[contracterror]
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum GovernorError {
-    AlreadyInitialized = 1,
-    NotInitialized = 2,
-    ProposalNotFound = 3,
-    VotingClosed = 4,
-    VotingStillOpen = 5,
-    AlreadyVoted = 6,
-    QuorumNotReached = 7,
-    ProposalNotPassed = 8,
-    TimelockNotElapsed = 9,
-    AlreadyExecuted = 10,
-    AlreadyCancelled = 11,
-    InvalidConfig = 12,
+    #[from(CommonError)]
+    Common(CommonError),
+    ProposalNotFound = 4,
+    VotingClosed = 5,
+    VotingStillOpen = 6,
+    AlreadyVoted = 7,
+    QuorumNotReached = 8,
+    ProposalNotPassed = 9,
+    TimelockNotElapsed = 10,
+    AlreadyExecuted = 11,
+    AlreadyCancelled = 12,
     InvalidWeight = 13,
+    AlreadyFinalized = 14,
     Unauthorized = 14,
     AlreadyFinalized = 15,
     VoteNotFound = 16,
@@ -205,17 +206,17 @@ impl GovernorContract {
         config.admin.require_auth();
 
         if env.storage().instance().has(&DataKey::Config) {
-            return Err(GovernorError::AlreadyInitialized);
+            return Err(GovernorError::Common(CommonError::AlreadyInitialized));
         }
         if config.quorum == 0 || config.voting_period == 0 {
-            return Err(GovernorError::InvalidConfig);
+            return Err(GovernorError::Common(CommonError::InvalidConfig));
         }
         // Sanity-check: vote_token must not be the same address as admin.
         // A misconfigured vote_token (e.g. admin address used by mistake) would pass
         // initialization silently but fail at vote() time. This catches the most obvious
         // misconfiguration early with a descriptive error.
         if config.vote_token == config.admin {
-            return Err(GovernorError::InvalidConfig);
+            return Err(GovernorError::Common(CommonError::InvalidConfig));
         }
         env.storage().instance().set(&DataKey::Config, &config);
         env.storage()
@@ -258,7 +259,7 @@ impl GovernorContract {
             .storage()
             .instance()
             .get(&DataKey::Config)
-            .ok_or(GovernorError::NotInitialized)?;
+            .ok_or(GovernorError::Common(CommonError::NotInitialized))?;
 
         let now = env.ledger().timestamp();
         let proposal_id: u64 = env
@@ -371,7 +372,7 @@ impl GovernorContract {
             .storage()
             .instance()
             .get(&DataKey::Config)
-            .ok_or(GovernorError::NotInitialized)?;
+            .ok_or(GovernorError::Common(CommonError::NotInitialized))?;
 
         // Enforce 1-token-1-vote: reject if claimed weight exceeds actual balance.
         let actual_balance = token::Client::new(&env, &config.vote_token).balance(&voter);
@@ -487,7 +488,7 @@ impl GovernorContract {
             .storage()
             .instance()
             .get(&DataKey::Config)
-            .ok_or(GovernorError::NotInitialized)?;
+            .ok_or(GovernorError::Common(CommonError::NotInitialized))?;
         let total_votes = proposal.votes_for + proposal.votes_against + proposal.abstentions;
 
         if total_votes >= config.quorum && proposal.votes_for > proposal.votes_against {
@@ -569,7 +570,7 @@ impl GovernorContract {
             .storage()
             .instance()
             .get(&DataKey::Config)
-            .ok_or(GovernorError::NotInitialized)?;
+            .ok_or(GovernorError::Common(CommonError::NotInitialized))?;
 
         if env.ledger().timestamp() < passed_at + config.timelock_delay {
             return Err(GovernorError::TimelockNotElapsed);
@@ -639,7 +640,7 @@ impl GovernorContract {
 
         // Only the original proposer can cancel
         if proposal.proposer != proposer {
-            return Err(GovernorError::Unauthorized);
+            return Err(GovernorError::Common(CommonError::Unauthorized));
         }
 
         // Can only cancel if still in Active state

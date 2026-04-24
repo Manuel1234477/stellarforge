@@ -92,7 +92,33 @@ We are committed to obtaining formal audits before recommending production deplo
 - `forge-governor`: Coordinate protocol upgrades by routing proposals through a token-weighted voting process and enforcing execution delays, and tune parameters like fees or collateral ratios in a transparent governance flow.
 - `forge-oracle`: Feed DEX price data into AMM pools for accurate swap pricing and slippage control, or provide collateral valuation updates for lending markets so borrowing power adjusts to live market conditions.
 
-## 📜 Contract Details
+## � Shared Error Crate
+
+### forge-errors
+
+A shared error library providing common error variants used across all StellarForge contracts. This reduces code duplication and enables integrators to handle common error scenarios with shared logic.
+
+**Common Error Variants:**
+- `AlreadyInitialized` - Contract has already been initialized
+- `NotInitialized` - Contract has not been initialized  
+- `Unauthorized` - Caller is not authorized to perform the action
+
+**Usage in Contracts:**
+Each contract imports `forge-errors::CommonError` and re-exports the shared variants alongside contract-specific errors:
+
+```rust
+use forge_errors::CommonError;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ContractError {
+    #[from(CommonError)]
+    Common(CommonError),
+    // Contract-specific variants...
+}
+```
+
+## �📜 Contract Details
 
 ### forge-vesting
 Deploy tokens on a vesting schedule with an optional cliff period. Perfect for team allocations or advisor tokens.
