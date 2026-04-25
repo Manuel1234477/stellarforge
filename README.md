@@ -42,7 +42,91 @@ For a full walkthrough including running tests and deploying to testnet, see the
 
 ---
 
-## 📊 Contract Comparison
+## 🖼️ Project Screenshots
+
+### Architecture Overview
+
+```mermaid
+graph TB
+    subgraph "StellarForge Ecosystem"
+        A[forge-vesting] --> D[Stellar Network]
+        B[forge-stream] --> D
+        C[forge-multisig] --> D
+        E[forge-governor] --> D
+        F[forge-oracle] --> D
+        G[forge-vesting-factory] --> D
+    end
+    
+    subgraph "Core Components"
+        H[forge-errors] --> A
+        H --> B
+        H --> C
+        H --> E
+        H --> F
+        H --> G
+    end
+    
+    I[DeFi Applications] --> A
+    I --> B
+    I --> C
+    I --> E
+    I --> F
+    I --> G
+```
+
+*StellarForge provides a modular suite of production-ready smart contracts for the Stellar ecosystem.*
+
+### Contract Interaction Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Governor as forge-governor
+    participant Multisig as forge-multisig
+    participant Stream as forge-stream
+    participant Vesting as forge-vesting
+    
+    User->>Governor: Create proposal
+    Governor->>Multisig: Execute approved proposal
+    Multisig->>Stream: Create payment stream
+    Stream->>Vesting: Fund vesting schedule
+    Vesting->>User: Release vested tokens
+```
+
+*Visual representation of how different StellarForge contracts interact with each other.*
+
+### Vesting Schedule Visualization
+
+```mermaid
+gantt
+    title Token Vesting Schedule
+    dateFormat  YYYY-MM-DD
+    section Cliff Period
+    No tokens released :active, cliff, 2024-01-01, 90d
+    section Linear Vesting
+    Gradual release :vest, after cliff, 2024-04-01, 270d
+    section Fully Vested
+    All tokens available :done, 2025-01-01, 1d
+```
+
+*Example of a typical vesting schedule with cliff period and linear vesting.*
+
+### Streaming Payment Interface
+
+```mermaid
+graph LR
+    A[Sender] -->|Rate: 1 XLM/sec| B[forge-stream]
+    B -->|Continuous flow| C[Recipient]
+    B -->|Real-time tracking| D[Stream Dashboard]
+    D -->|Balance: 45.5 XLM| C
+    D -->|Time remaining: 2h 15m| A
+```
+
+*Real-time visualization of token streaming payments.*
+
+---
+
+## �📊 Contract Comparison
 Developers evaluating StellarForge can use this table to quickly identify the right primitive for their specific use case.
 
 | Contract | Use Case | Admin Required | Events Emitted | Timelock |
